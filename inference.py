@@ -21,7 +21,6 @@ from deeplab_resnet import DeepLabResNetModel, ImageReader, decode_labels, prepa
 IMG_MEAN = np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32)
     
 NUM_CLASSES = 21
-SAVE_DIR = './output/'
 
 def get_arguments():
     """Parse all the arguments provided from the CLI.
@@ -36,8 +35,6 @@ def get_arguments():
                         help="Path to the file with model weights.")
     parser.add_argument("--num-classes", type=int, default=NUM_CLASSES,
                         help="Number of classes to predict (including background).")
-    parser.add_argument("--save-dir", type=str, default=SAVE_DIR,
-                        help="Where to save predicted mask.")
     return parser.parse_args()
 
 def load(saver, sess, ckpt_path):
@@ -54,6 +51,7 @@ def load(saver, sess, ckpt_path):
 def main():
     """Create the model and start the evaluation process."""
     args = get_arguments()
+    saveFile = args.img_path[0:args.img_path.rindex('.')] + '-mask.png'
     
     # Prepare image.
     img = tf.image.decode_jpeg(tf.read_file(args.img_path), channels=3)
@@ -93,11 +91,9 @@ def main():
     
     msk = decode_labels(preds, num_classes=args.num_classes)
     im = Image.fromarray(msk[0])
-    if not os.path.exists(args.save_dir):
-        os.makedirs(args.save_dir)
-    im.save(args.save_dir + 'mask.png')
+    im.save(saveFile)
     
-    print('The output file has been saved to {}'.format(args.save_dir + 'mask.png'))
+    print('The output file has been saved to {}'.format(saveFile))
 
     
 if __name__ == '__main__':
