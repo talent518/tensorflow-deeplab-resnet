@@ -25,7 +25,7 @@ BATCH_SIZE = 4
 DATA_DIRECTORY = '/home/VOCdevkit'
 DATA_LIST_PATH = './dataset/train.txt'
 IGNORE_LABEL = 255
-INPUT_SIZE = '321,321'
+INPUT_SIZE = '500,500'
 LEARNING_RATE = 1e-4
 NUM_CLASSES = 21
 NUM_STEPS = 20000
@@ -200,6 +200,7 @@ def main():
             loss_value, _ = sess.run([reduced_loss, optim])
         duration = time.time() - start_time
         print('step {:d} \t loss = {:.3f}, ({:.3f} sec/step)'.format(step, loss_value, duration))
+        sys.stdout.flush()
     coord.request_stop()
     coord.join(threads)
     
