@@ -1,0 +1,1 @@
+tar -jcvf - deeplab_resnet.ckpt voc2012-500x500.zip | split -b 64m - model-trainsets.

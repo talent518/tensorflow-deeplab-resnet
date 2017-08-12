@@ -1,7 +1,7 @@
 #!/usr/bin/sh --login
 
 if [ ! -f "deeplab_resnet.ckpt" ]; then
-	unzip deeplab_resnet.zip
+	cat model-trainsets.a* | tar -xj
 fi
 
 if [ ! -f "/home/VOCdevkit/train.txt" ]; then
