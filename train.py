@@ -33,7 +33,7 @@ POWER = 0.9
 RANDOM_SEED = 1234
 RESTORE_FROM = './deeplab_resnet.ckpt'
 SAVE_NUM_IMAGES = 2
-SAVE_PRED_EVERY = 1000
+SAVE_PRED_EVERY = 100
 SNAPSHOT_DIR = './snapshots/'
 WEIGHT_DECAY = 0.0005
 
@@ -238,7 +238,7 @@ def main():
         start_time = time.time()
         feed_dict = { step_ph : step }
         
-        if step % args.save_pred_every == 0:
+        if step > 0 and step % args.save_pred_every == 0:
             loss_value, images, labels, preds, summary, _ = sess.run([reduced_loss, image_batch, label_batch, pred, total_summary, train_op], feed_dict=feed_dict)
             summary_writer.add_summary(summary, step)
             save(saver, sess, args.snapshot_dir, step)

@@ -176,5 +176,5 @@ class ImageReader(object):
         Returns:
           Two tensors of size (batch_size, h, w, {3, 1}) for images and masks.'''
         image_batch, label_batch = tf.train.batch([self.image, self.label],
-                                                  num_elements)
+                                                  num_elements, allow_smaller_final_batch=True)
         return image_batch, label_batch

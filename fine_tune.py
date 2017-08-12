@@ -192,7 +192,7 @@ def main():
     for step in range(args.num_steps):
         start_time = time.time()
         
-        if step % args.save_pred_every == 0:
+        if step > 0 and step % args.save_pred_every == 0:
             loss_value, images, labels, preds, summary, _ = sess.run([reduced_loss, image_batch, label_batch, pred, total_summary, optim])
             summary_writer.add_summary(summary, step)
             save(saver, sess, args.snapshot_dir, step)
