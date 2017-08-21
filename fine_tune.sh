@@ -16,6 +16,6 @@ if [ -f "snapshots_finetune/model.ckpt-$1.index" ]; then
 	ARGS="--restore-from snapshots_finetune/model.ckpt-$1"
 fi
 
-nohup python fine_tune.py --data-list /home/VOCdevkit/train.txt $ARGS > train.log 2>&1 &
+nohup python fine_tune.py --random-mirror --random-scale --data-list /home/VOCdevkit/train.txt $ARGS > train.log 2>&1 &
 pidstat -C python -r 1
 
