@@ -27,7 +27,14 @@ def request(route, post):
         
         return json.loads(response), True
     except urllib2.URLError, e:
-        
+        response = e.read()
+        # print '------------------------------'
+        # print 'url: ', e.geturl()
+        # print 'code: ', e.code
+        # print 'reason: ', e.reason
+        # print 'response: ', response
+        # print '------------------------------'
+        return response, False
 
 def readfile(file):
     f = open(file, 'rb')
@@ -43,7 +50,7 @@ def writefile(file, body):
     return ret
 
 if __name__ == '__main__':
-    response, status = request('/train', {'image': 1, 'label': 2})
+    response, status = request('/train', {'image': base64.encodestring(readfile('/home/VOCdevkit/JPEGImages/2007_003169.jpg')), 'label': base64.encodestring(readfile('/home/VOCdevkit/SegmentationClassAug/2007_003169.png'))})
 
     if status:
         file = './2007_000032-mask.png'
