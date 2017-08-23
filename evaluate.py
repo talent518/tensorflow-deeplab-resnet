@@ -119,7 +119,9 @@ def main():
         preds, _ = sess.run([pred, update_op])
         if step % 100 == 0:
             print('step {:d}'.format(step))
+            sys.stdout.flush()
     print('Mean IoU: {:.3f}'.format(mIoU.eval(session=sess)))
+    sys.stdout.flush()
     coord.request_stop()
     coord.join(threads)
     

@@ -3,10 +3,7 @@
 This script computes a segmentation mask for a given image.
 """
 
-from __future__ import print_function
-
 import argparse
-from datetime import datetime
 import os
 import sys
 import time

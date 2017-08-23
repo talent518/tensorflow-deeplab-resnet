@@ -16,6 +16,11 @@ if [ -f "snapshots/model.ckpt-$1.index" ]; then
 	ARGS="--restore-from snapshots/model.ckpt-$1"
 fi
 
-nohup python train.py --random-mirror --random-scale --is-training --data-list /home/VOCdevkit/train.txt $ARGS > train.log 2>&1 &
+ARGS=
+if [ -f "snapshots_finetune/model.ckpt-$1.index" ]; then
+    ARGS="--restore-from snapshots_finetune/model.ckpt-$1"
+fi
+
+nohup python evaluate.py --data-list /home/VOCdevkit/train.txt $ARGS > evaluate.log 2>&1 &
 pidstat -C python -r 1
 
