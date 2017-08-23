@@ -7,6 +7,7 @@ import json
 import traceback
 import shutil
 import re
+import os
 
 try:
     from cStringIO import StringIO
@@ -22,6 +23,8 @@ import argparse
 
 from deeplab_resnet import DeepLabResNetModel, decode_labels, prepare_label
 
+import httpclient
+
 rePath = re.compile(r'[^\w]+')
 
 IMG_MEAN = np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32)
@@ -32,6 +35,11 @@ args = None
 input_image = None
 output_pred = None
 sess = None
+srvr = None
+loader = None
+step = 0
+savedir = './snapshots_httpserver'
+stepfile = os.path.join(savedir, 'model.ckpt.step')
 
 class HTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
     def version_string(self):
@@ -94,13 +102,20 @@ class HTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         self.wfile.write(postStr)
 
     def action_train(self, image, label):
-        return a
+        global args
+        global input_image
+        global output_pred
+        global sess
+        global srvr
+
+        pass
 
     def action_test(self, image):
         global args
         global input_image
         global output_pred
         global sess
+        global srvr
 
         # Perform inference.
         imgfile = base64.decodestring(image)
@@ -127,7 +142,7 @@ def get_arguments():
       A list of parsed arguments.
     """
     parser = argparse.ArgumentParser(description="Deeplab Resnet Http Server.")
-    parser.add_argument("--model-weights", type=str, default='./deeplab_resnet.ckpt', help="Path to the file with model weights.")
+    parser.add_argument("--model-weights", type=str, default=None, help="Path to the file with model weights.")
     parser.add_argument("--port", type=int, default=8000, help="Listen on port(default: 8000)")
     parser.add_argument("--num-classes", type=int, default=NUM_CLASSES, help="Number of classes to predict (including background).")
     return parser.parse_args()
@@ -138,6 +153,11 @@ def main():
     global input_image
     global output_pred
     global sess
+    global loader
+    global srvr
+    global savedir
+    global stepfile
+    global step
 
     args = get_arguments()
     input_image = tf.placeholder(dtype=tf.string)
@@ -169,8 +189,17 @@ def main():
     
     sess.run(tf.global_variables_initializer())
     
+    if os.path.exists(stepfile):
+        step = int(httpclient.readfile(stepfile))
+    if args.model_weights is None:
+        args.model_weights = './deeplab_resnet.ckpt'
+        indexfile = os.path.join(savedir, 'model.ckpt-%d.index' % step)
+        if os.path.exists(indexfile):
+            args.model_weights = indexfile[:-6]
+
     # Load weights.
     loader = tf.train.Saver(var_list=restore_var)
+    print 'Restoring from "%s.*" ...' % args.model_weights
     loader.restore(sess, args.model_weights)
 
     #单线程
@@ -183,4 +212,18 @@ def main():
     srvr.serve_forever()
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # save train result
+        if loader is not None:
+            if not os.path.exists(savedir):
+                os.makedirs(savedir)
+
+            step += 1
+            print 'Saving to "%s" ...' % os.path.join(savedir, 'model.ckpt-%d.*' % step)
+            httpclient.writefile(stepfile, str(step))
+            loader.save(sess, os.path.join(savedir, 'model.ckpt'), global_step=step)
+        if srvr is not None:
+            srvr.shutdown()
+        print 'exited.'
