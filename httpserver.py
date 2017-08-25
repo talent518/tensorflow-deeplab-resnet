@@ -8,6 +8,9 @@ import traceback
 import shutil
 import re
 import os
+import sys
+import threadpool
+import time
 
 try:
     from cStringIO import StringIO
@@ -22,13 +25,13 @@ import base64
 import argparse
 
 from deeplab_resnet import DeepLabResNetModel, decode_labels, prepare_label
+from deeplab_resnet.image_reader import read_images_from_disk
 
 import httpclient
 
 rePath = re.compile(r'[^\w]+')
 
 IMG_MEAN = np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32)
-
 NUM_CLASSES = 21
 
 args = None
@@ -101,26 +104,59 @@ class HTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
 
         self.wfile.write(postStr)
 
-    def action_train(self, image, label):
+    def action_train(self, image, label, trains=10):
         global args
         global input_image
-        global output_pred
+        global raw_output
+        global pred
         global sess
-        global srvr
 
-        pass
+        image = base64.decodestring(image)
+        feed_dict = {input_image:image}
+    
+        img = tf.image.decode_png(base64.decodestring(label), channels=1)
+        input_label = tf.expand_dims(img, dim=0)
+        
+        prediction = tf.reshape(raw_output, [-1, args.num_classes])
+        label_proc = prepare_label(input_label, tf.stack(tf.shape(input_label)[1:3]), num_classes=args.num_classes)
+        gt = tf.reshape(label_proc, [-1, args.num_classes])
+        print prediction.shape, gt.shape
+
+        # Pixel-wise softmax loss.
+        loss = tf.nn.softmax_cross_entropy_with_logits(logits=prediction, labels=gt)
+        reduced_loss = tf.reduce_mean(loss)
+
+        # Define loss and optimisation parameters.
+        optimiser = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
+        optim = optimiser.minimize(reduced_loss, var_list=trainable)
+        f = StringIO()
+        for step in range(trains):
+            start_time = time.time()
+            if step % 100 == 0:
+                loss_value, preds, _ = sess.run([reduced_loss, pred, optim], feed_dict=feed_dict)
+            else:
+                loss_value, _ = sess.run([reduced_loss, optim], feed_dict=feed_dict)
+            duration = time.time() - start_time
+            msg = 'step {:d} \t loss = {:.3f}, ({:.3f} sec/step)'.format(step, loss_value, duration)
+
+            f.write(msg)
+            sys.stdout.write(msg)
+            sys.stdout.flush()
+        length = f.tell()
+        f.seek(0)
+        ret = base64.encodestring(f.read(length))
+        f.close()
+        return ret
 
     def action_test(self, image):
         global args
         global input_image
-        global output_pred
+        global pred
         global sess
-        global srvr
 
         # Perform inference.
-        imgfile = base64.decodestring(image)
-        print type(imgfile)
-        preds = sess.run(output_pred, feed_dict={input_image:imgfile})
+        image = base64.decodestring(image)
+        preds = sess.run(pred, feed_dict={input_image:image})
         
         f = StringIO()
         msk = decode_labels(preds, num_classes=args.num_classes)
@@ -132,8 +168,71 @@ class HTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         f.close()
         return ret
 
-class ThreadingServer(ThreadingMixIn, BaseHTTPServer.HTTPServer):
-    pass
+class ThreadingServer(BaseHTTPServer.HTTPServer):
+    def serve_forever_thread(self, poll_interval):
+        BaseHTTPServer.HTTPServer.serve_forever(self, poll_interval)
+
+    def serve_forever(self, poll_interval=0.5):
+        pool_size = cpu_count() * 2 + 1
+        self.pool = threadpool.ThreadPool(pool_size)
+        self.pool.putRequest(threadpool.WorkRequest(self.serve_forever_thread, args=[poll_interval]))
+        try:
+            while True:
+                time.sleep(0.001)
+                self.pool.poll()
+        except KeyboardInterrupt:
+            global srvr
+            srvr.shutdown()
+            srvr.server_close()
+            srvr = None
+        finally:
+            print("destory all threads before exit...")
+            self.pool.dismissWorkers(pool_size, do_join=True)
+
+    def process_request_thread(self, request, client_address):
+        """Same as in BaseServer but as a thread.
+
+        In addition, exception handling is done here.
+
+        """
+        try:
+            self.finish_request(request, client_address)
+            self.shutdown_request(request)
+        except:
+            self.handle_error(request, client_address)
+            self.shutdown_request(request)
+
+    def process_request(self, request, client_address):
+        self.pool.putRequest(threadpool.WorkRequest(self.process_request_thread, args=[request, client_address]))
+
+def cpu_count():
+    '''
+    Returns the number of CPUs in the system
+    '''
+    if sys.platform == 'win32':
+        try:
+            num = int(os.environ['NUMBER_OF_PROCESSORS'])
+        except (ValueError, KeyError):
+            num = 0
+    elif 'bsd' in sys.platform or sys.platform == 'darwin':
+        comm = '/sbin/sysctl -n hw.ncpu'
+        if sys.platform == 'darwin':
+            comm = '/usr' + comm
+        try:
+            with os.popen(comm) as p:
+                num = int(p.read())
+        except ValueError:
+            num = 0
+    else:
+        try:
+            num = os.sysconf('SC_NPROCESSORS_ONLN')
+        except (ValueError, OSError, AttributeError):
+            num = 0
+
+    if num >= 1:
+        return num
+    else:
+        return 2
 
 def get_arguments():
     """Parse all the arguments provided from the CLI.
@@ -145,13 +244,20 @@ def get_arguments():
     parser.add_argument("--model-weights", type=str, default=None, help="Path to the file with model weights.")
     parser.add_argument("--port", type=int, default=8000, help="Listen on port(default: 8000)")
     parser.add_argument("--num-classes", type=int, default=NUM_CLASSES, help="Number of classes to predict (including background).")
+    parser.add_argument("--debug", default=False, help="Tensorflow's session debugger")
+
+    parser.add_argument("--is-training", action="store_true",
+                        help="Whether to updates the running means and variances during the training.")
+
     return parser.parse_args()
 
 def main():
     """Create the model and start the evaluation process."""
     global args
     global input_image
-    global output_pred
+    global raw_input
+    global raw_output
+    global pred
     global sess
     global loader
     global srvr
@@ -160,33 +266,42 @@ def main():
     global step
 
     args = get_arguments()
-    input_image = tf.placeholder(dtype=tf.string)
 
-    # Prepare image.
+    input_size = None # (height, width)
+    input_image = tf.placeholder(tf.string)
+
     img = tf.image.decode_jpeg(input_image, channels=3)
-    # Convert RGB to BGR.
     img_r, img_g, img_b = tf.split(axis=2, num_or_size_splits=3, value=img)
     img = tf.cast(tf.concat(axis=2, values=[img_b, img_g, img_r]), dtype=tf.float32)
     # Extract mean.
-    img -= IMG_MEAN 
-    
-    # Create network.
-    net = DeepLabResNetModel({'data': tf.expand_dims(img, dim=0)}, is_training=False, num_classes=args.num_classes)
+    img -= IMG_MEAN
+    raw_input = tf.expand_dims(img, dim=0)
 
-    # Which variables to load.
-    restore_var = tf.global_variables()
+    # Create network.
+    net = DeepLabResNetModel({'data': raw_input}, is_training=args.is_training, num_classes=args.num_classes)
 
     # Predictions.
     raw_output = net.layers['fc1_voc12']
-    raw_output_up = tf.image.resize_bilinear(raw_output, tf.shape(img)[0:2,])
-    raw_output_up = tf.argmax(raw_output_up, dimension=3)
-    output_pred = tf.expand_dims(raw_output_up, dim=3)
+    # Which variables to load. Running means and variances are not trainable,
+    # thus all_variables() should be restored.
+    # Restore all variables, or all except the last ones.
+    restore_var = [v for v in tf.global_variables() if 'fc' not in v.name]
+    trainable = [v for v in tf.trainable_variables() if 'fc1_voc12' in v.name] # Fine-tune only the last layers.
     
+    # Processed predictions.
+    raw_output_up = tf.image.resize_bilinear(raw_output, tf.shape(img)[1:3,])
+    raw_output_up = tf.argmax(raw_output_up, dimension=3)
+    pred = tf.expand_dims(raw_output_up, dim=3)
+
     # Set up TF session and initialize variables. 
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
-    sess = tf.Session(config=config)
+    sess = tf.InteractiveSession(config=config)
     
+    if args.debug:
+        from tensorflow.python.debug import LocalCLIDebugWrapperSession as DSession
+        sess = DSession(sess)
+
     sess.run(tf.global_variables_initializer())
     
     if os.path.exists(stepfile):
@@ -215,15 +330,22 @@ if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
+        pass
+    except:
+        traceback.print_exc()
+    finally:
+        print 'exiting...'
+        if srvr is not None:
+            srvr.shutdown()
+            srvr.server_close()
         # save train result
-        if loader is not None:
+        if sess is not None:
             if not os.path.exists(savedir):
                 os.makedirs(savedir)
 
             step += 1
             print 'Saving to "%s" ...' % os.path.join(savedir, 'model.ckpt-%d.*' % step)
             httpclient.writefile(stepfile, str(step))
+            loader = tf.train.Saver(max_to_keep = 1000)
             loader.save(sess, os.path.join(savedir, 'model.ckpt'), global_step=step)
-        if srvr is not None:
-            srvr.shutdown()
         print 'exited.'
