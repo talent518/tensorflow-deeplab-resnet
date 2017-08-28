@@ -36,15 +36,15 @@ def request(route, post):
 
         return response, False
 
-def readfile(file):
-    f = open(file, 'rb')
+def readfile(fname):
+    f = open(fname, 'rb')
     fs = os.fstat(f.fileno())
     ret = f.read(fs.st_size)
     f.close()
     return ret
 
-def writefile(file, body):
-    f = open(file, 'wb')
+def writefile(fname, body):
+    f = open(fname, 'wb')
     ret = f.write(body)
     f.close()
     return ret

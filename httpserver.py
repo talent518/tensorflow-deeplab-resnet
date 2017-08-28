@@ -2,7 +2,6 @@
 #-*- encoding:UTF-8 -*-
 
 import BaseHTTPServer
-from SocketServer import ThreadingMixIn
 import json
 import traceback
 import shutil
@@ -25,7 +24,6 @@ import base64
 import argparse
 
 from deeplab_resnet import DeepLabResNetModel, decode_labels, prepare_label
-from deeplab_resnet.image_reader import read_images_from_disk
 
 import httpclient
 
@@ -256,7 +254,6 @@ def main():
 
     args = get_arguments()
 
-    input_size = None # (height, width)
     input_image = tf.placeholder(tf.string)
 
     img = tf.image.decode_jpeg(input_image, channels=3)
