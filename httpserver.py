@@ -33,6 +33,7 @@ rePath = re.compile(r'[^\w]+')
 
 IMG_MEAN = np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32)
 NUM_CLASSES = 21
+LEARNING_RATE = 1e-7
 
 args = None
 input_image = None
@@ -107,37 +108,19 @@ class HTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
     def action_train(self, image, label, trains=10):
         global args
         global input_image
-        global raw_output
-        global pred
+        global input_label
         global sess
+        global reduced_loss
+        global optim
 
-        image = base64.decodestring(image)
-        feed_dict = {input_image:image}
+        feed_dict = {input_image:base64.decodestring(image), input_label:base64.decodestring(label)}
     
-        img = tf.image.decode_png(base64.decodestring(label), channels=1)
-        input_label = tf.expand_dims(img, dim=0)
-        
-        prediction = tf.reshape(raw_output, [-1, args.num_classes])
-        label_proc = prepare_label(input_label, tf.stack(tf.shape(input_label)[1:3]), num_classes=args.num_classes)
-        gt = tf.reshape(label_proc, [-1, args.num_classes])
-        print prediction.shape, gt.shape
-
-        # Pixel-wise softmax loss.
-        loss = tf.nn.softmax_cross_entropy_with_logits(logits=prediction, labels=gt)
-        reduced_loss = tf.reduce_mean(loss)
-
-        # Define loss and optimisation parameters.
-        optimiser = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
-        optim = optimiser.minimize(reduced_loss, var_list=trainable)
         f = StringIO()
         for step in range(trains):
             start_time = time.time()
-            if step % 100 == 0:
-                loss_value, preds, _ = sess.run([reduced_loss, pred, optim], feed_dict=feed_dict)
-            else:
-                loss_value, _ = sess.run([reduced_loss, optim], feed_dict=feed_dict)
+            loss_value, _ = sess.run([reduced_loss, optim], feed_dict=feed_dict)
             duration = time.time() - start_time
-            msg = 'step {:d} \t loss = {:.3f}, ({:.3f} sec/step)'.format(step, loss_value, duration)
+            msg = 'step {:d} \t loss = {:.3f}, ({:.3f} sec/step)\n'.format(step, loss_value, duration)
 
             f.write(msg)
             sys.stdout.write(msg)
@@ -246,8 +229,10 @@ def get_arguments():
     parser.add_argument("--num-classes", type=int, default=NUM_CLASSES, help="Number of classes to predict (including background).")
     parser.add_argument("--debug", default=False, help="Tensorflow's session debugger")
 
-    parser.add_argument("--is-training", action="store_true",
+    parser.add_argument("--is-training", default=False, action="store_true",
                         help="Whether to updates the running means and variances during the training.")
+    parser.add_argument("--learning-rate", type=float, default=LEARNING_RATE,
+                        help="Learning rate for training.")
 
     return parser.parse_args()
 
@@ -255,7 +240,9 @@ def main():
     """Create the model and start the evaluation process."""
     global args
     global input_image
-    global raw_input
+    global raw_input_image
+    global input_label
+    global raw_input_label
     global raw_output
     global pred
     global sess
@@ -264,6 +251,8 @@ def main():
     global savedir
     global stepfile
     global step
+    global reduced_loss
+    global optim
 
     args = get_arguments()
 
@@ -275,23 +264,37 @@ def main():
     img = tf.cast(tf.concat(axis=2, values=[img_b, img_g, img_r]), dtype=tf.float32)
     # Extract mean.
     img -= IMG_MEAN
-    raw_input = tf.expand_dims(img, dim=0)
+    raw_input_image = tf.expand_dims(img, dim=0)
 
     # Create network.
-    net = DeepLabResNetModel({'data': raw_input}, is_training=args.is_training, num_classes=args.num_classes)
+    net = DeepLabResNetModel({'data': raw_input_image}, is_training=args.is_training, num_classes=args.num_classes)
+
+    # Which variables to load.
+    restore_var = tf.global_variables()
+    trainable = tf.trainable_variables()
 
     # Predictions.
     raw_output = net.layers['fc1_voc12']
-    # Which variables to load. Running means and variances are not trainable,
-    # thus all_variables() should be restored.
-    # Restore all variables, or all except the last ones.
-    restore_var = [v for v in tf.global_variables() if 'fc' not in v.name]
-    trainable = [v for v in tf.trainable_variables() if 'fc1_voc12' in v.name] # Fine-tune only the last layers.
-    
-    # Processed predictions.
-    raw_output_up = tf.image.resize_bilinear(raw_output, tf.shape(img)[1:3,])
+    raw_output_up = tf.image.resize_bilinear(raw_output, tf.shape(img)[0:2,])
     raw_output_up = tf.argmax(raw_output_up, dimension=3)
     pred = tf.expand_dims(raw_output_up, dim=3)
+
+    # Label
+    input_label = tf.placeholder(tf.string)
+    img = tf.image.decode_png(input_label, channels=1)
+    raw_input_label = tf.expand_dims(img, dim=0)
+
+    prediction = tf.reshape(raw_output, [-1, args.num_classes])
+    label_proc = prepare_label(raw_input_label, [63, 63], num_classes=args.num_classes)
+    gt = tf.reshape(label_proc, [-1, args.num_classes])
+
+    # Pixel-wise softmax loss.
+    loss = tf.nn.softmax_cross_entropy_with_logits(logits=prediction, labels=gt)
+    reduced_loss = tf.reduce_mean(loss)
+
+    # Define loss and optimisation parameters.
+    optimiser = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
+    optim = optimiser.minimize(reduced_loss, var_list=trainable)
 
     # Set up TF session and initialize variables. 
     config = tf.ConfigProto()
@@ -318,7 +321,7 @@ def main():
     loader.restore(sess, args.model_weights)
 
     #单线程
-    # srvr = BaseHTTPServer.HTTPServer(("0.0.0.0", args.port), SimpleHTTPRequestHandler)
+    # srvr = BaseHTTPServer.HTTPServer(("0.0.0.0", args.port), HTTPRequestHandler)
     
     #多线程
     srvr = ThreadingServer(("0.0.0.0", args.port), HTTPRequestHandler)
