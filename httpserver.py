@@ -31,7 +31,11 @@ rePath = re.compile(r'[^\w]+')
 
 IMG_MEAN = np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32)
 NUM_CLASSES = 21
-LEARNING_RATE = 1e-7
+NUM_STEPS = 200
+LEARNING_RATE = 1e-10
+WEIGHT_DECAY = 0.0005
+POWER = 0.9
+MOMENTUM = 0.9
 
 args = None
 input_image = None
@@ -109,14 +113,22 @@ class HTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         global input_label
         global sess
         global reduced_loss
-        global optim
+        global train_op
 
         feed_dict = {input_image:base64.decodestring(image), input_label:base64.decodestring(label)}
-    
+
+        if not args.is_fine_tune:
+            global step_ph
+            global num_steps
+            feed_dict[num_steps] = trains
+
         f = StringIO()
         for step in range(trains):
+            if not args.is_fine_tune:
+                feed_dict[step_ph] = step
+
             start_time = time.time()
-            loss_value, _ = sess.run([reduced_loss, optim], feed_dict=feed_dict)
+            loss_value, _ = sess.run([reduced_loss, train_op], feed_dict=feed_dict)
             duration = time.time() - start_time
             msg = 'step {:d} \t loss = {:.3f}, ({:.3f} sec/step)\n'.format(step, loss_value, duration)
 
@@ -231,6 +243,14 @@ def get_arguments():
                         help="Whether to updates the running means and variances during the training.")
     parser.add_argument("--learning-rate", type=float, default=LEARNING_RATE,
                         help="Learning rate for training.")
+    parser.add_argument("--is-fine-tune", default=False, action="store_true",
+                        help="Using fine_tune.py in the network.")
+    parser.add_argument("--weight-decay", type=float, default=WEIGHT_DECAY,
+                        help="Regularisation parameter for L2-loss.")
+    parser.add_argument("--power", type=float, default=POWER,
+                        help="Decay parameter to compute the learning rate.")
+    parser.add_argument("--momentum", type=float, default=MOMENTUM,
+                        help="Momentum component of the optimiser.")
 
     return parser.parse_args()
 
@@ -250,7 +270,7 @@ def main():
     global stepfile
     global step
     global reduced_loss
-    global optim
+    global train_op
 
     args = get_arguments()
 
@@ -268,7 +288,16 @@ def main():
 
     # Which variables to load.
     restore_var = tf.global_variables()
-    trainable = tf.trainable_variables()
+    if args.is_fine_tune:
+        trainable = tf.trainable_variables()
+    else:
+        all_trainable = [v for v in tf.trainable_variables() if 'beta' not in v.name and 'gamma' not in v.name]
+        fc_trainable = [v for v in all_trainable if 'fc' in v.name]
+        conv_trainable = [v for v in all_trainable if 'fc' not in v.name] # lr * 1.0
+        fc_w_trainable = [v for v in fc_trainable if 'weights' in v.name] # lr * 10.0
+        fc_b_trainable = [v for v in fc_trainable if 'biases' in v.name] # lr * 20.0
+        assert(len(all_trainable) == len(fc_trainable) + len(conv_trainable))
+        assert(len(fc_trainable) == len(fc_w_trainable) + len(fc_b_trainable))
 
     # Predictions.
     raw_output = net.layers['fc1_voc12']
@@ -281,17 +310,56 @@ def main():
     img = tf.image.decode_png(input_label, channels=1)
     raw_input_label = tf.expand_dims(img, dim=0)
 
-    prediction = tf.reshape(raw_output, [-1, args.num_classes])
-    label_proc = prepare_label(raw_input_label, [63, 63], num_classes=args.num_classes)
-    gt = tf.reshape(label_proc, [-1, args.num_classes])
+    if args.is_fine_tune:
+        prediction = tf.reshape(raw_output, [-1, args.num_classes])
+        label_proc = prepare_label(raw_input_label, [63, 63], num_classes=args.num_classes)
+        gt = tf.reshape(label_proc, [-1, args.num_classes])
 
-    # Pixel-wise softmax loss.
-    loss = tf.nn.softmax_cross_entropy_with_logits(logits=prediction, labels=gt)
-    reduced_loss = tf.reduce_mean(loss)
+        # Pixel-wise softmax loss.
+        loss = tf.nn.softmax_cross_entropy_with_logits(logits=prediction, labels=gt)
+        reduced_loss = tf.reduce_mean(loss)
 
-    # Define loss and optimisation parameters.
-    optimiser = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
-    optim = optimiser.minimize(reduced_loss, var_list=trainable)
+        # Define loss and optimisation parameters.
+        optimiser = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
+        train_op = optimiser.minimize(reduced_loss, var_list=trainable)
+    else:
+        global step_ph
+        global num_steps
+
+        # Predictions: ignoring all predictions with labels greater or equal than n_classes
+        raw_prediction = tf.reshape(raw_output, [-1, args.num_classes])
+        label_proc = prepare_label(raw_input_label, [63, 63], num_classes=args.num_classes, one_hot=False) # [batch_size, h, w]
+        raw_gt = tf.reshape(label_proc, [-1,])
+        indices = tf.squeeze(tf.where(tf.less_equal(raw_gt, args.num_classes - 1)), 1)
+        gt = tf.cast(tf.gather(raw_gt, indices), tf.int32)
+        prediction = tf.gather(raw_prediction, indices)
+                                                      
+                                                      
+        # Pixel-wise softmax loss.
+        loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=prediction, labels=gt)
+        l2_losses = [args.weight_decay * tf.nn.l2_loss(v) for v in tf.trainable_variables() if 'weights' in v.name]
+        reduced_loss = tf.reduce_mean(loss) + tf.add_n(l2_losses)
+
+        # Define loss and optimisation parameters.
+        base_lr = tf.constant(args.learning_rate)
+        step_ph = tf.placeholder(dtype=tf.float32, shape=())
+        num_steps = tf.placeholder(dtype=tf.float32, shape=())
+        learning_rate = tf.scalar_mul(base_lr, tf.pow((1 - step_ph / num_steps), args.power))
+        
+        opt_conv = tf.train.MomentumOptimizer(learning_rate, args.momentum)
+        opt_fc_w = tf.train.MomentumOptimizer(learning_rate * 10.0, args.momentum)
+        opt_fc_b = tf.train.MomentumOptimizer(learning_rate * 20.0, args.momentum)
+
+        grads = tf.gradients(reduced_loss, conv_trainable + fc_w_trainable + fc_b_trainable)
+        grads_conv = grads[:len(conv_trainable)]
+        grads_fc_w = grads[len(conv_trainable) : (len(conv_trainable) + len(fc_w_trainable))]
+        grads_fc_b = grads[(len(conv_trainable) + len(fc_w_trainable)):]
+
+        train_op_conv = opt_conv.apply_gradients(zip(grads_conv, conv_trainable))
+        train_op_fc_w = opt_fc_w.apply_gradients(zip(grads_fc_w, fc_w_trainable))
+        train_op_fc_b = opt_fc_b.apply_gradients(zip(grads_fc_b, fc_b_trainable))
+
+        train_op = tf.group(train_op_conv, train_op_fc_w, train_op_fc_b)
 
     # Set up TF session and initialize variables. 
     config = tf.ConfigProto()
