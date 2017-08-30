@@ -59,25 +59,19 @@ if __name__ == '__main__':
     parser.add_argument("--test-image", type=str, help="test label(default: --train-image)")
     parser.add_argument("--test-label", type=str, help="test label(default: --test-image + suffix -mask.png)")
     args = parser.parse_args()
-    if args.train_image is None:
-        parser.error('Not Found arguments --train-image')
-    if args.train_label is None:
-        parser.error('Not Found arguments --train-label')
+    if args.train_image is not None and args.train_label is not None:
+        response, status = request('/train', {'trains': args.trains, 'image': base64.encodestring(readfile(args.train_image)), 'label': base64.encodestring(readfile(args.train_label))})
 
-    response, status = request('/train', {'trains': args.trains, 'image': base64.encodestring(readfile(args.train_image)), 'label': base64.encodestring(readfile(args.train_label))})
+        print '/train', status, response if not status else base64.decodestring(response)
 
-    print '/train', status, response if not status else base64.decodestring(response)
+    if args.test_image is not None and args.test_label is None:
+        args.test_label = os.path.splitext(args.test_image)[0] + '-mask-%d.png' % int(time.time())
 
-    if args.test_image is None:
-        args.test_image = args.train_image
+    if args.test_image is not None and args.test_label is not None:
+        response, status = request('/test', {'image': base64.encodestring(readfile(args.test_image))})
 
-    if args.test_label is None:
-        args.test_label = args.test_image + '-mask-%d.png' % int(time.time())
-
-    response, status = request('/test', {'image': base64.encodestring(readfile(args.test_image))})
-
-    if status:
-        writefile(args.test_label, base64.decodestring(response))
-        print '/test Save to ' + args.test_label
-    else:
-        print '/test', response
+        if status:
+            writefile(args.test_label, base64.decodestring(response))
+            print '/test Save to ' + args.test_label
+        else:
+            print '/test', response
