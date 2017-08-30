@@ -237,7 +237,7 @@ def get_arguments():
     parser.add_argument("--model-weights", type=str, default=None, help="Path to the file with model weights.")
     parser.add_argument("--port", type=int, default=8000, help="Listen on port(default: 8000)")
     parser.add_argument("--num-classes", type=int, default=NUM_CLASSES, help="Number of classes to predict (including background).")
-    parser.add_argument("--debug", default=False, help="Tensorflow's session debugger")
+    parser.add_argument("--debug", default=False, action="store_true", help="Tensorflow's session debugger")
 
     parser.add_argument("--is-training", default=False, action="store_true",
                         help="Whether to updates the running means and variances during the training.")
