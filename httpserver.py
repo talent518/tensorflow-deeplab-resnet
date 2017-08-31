@@ -22,6 +22,7 @@ import tensorflow as tf
 import numpy as np
 import base64
 import argparse
+import inspect
 
 from deeplab_resnet import DeepLabResNetModel, decode_labels, prepare_label
 
@@ -93,7 +94,9 @@ class HTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             method = getattr(self, action)
             try:
                 self.post = post
-                post = method(**post)
+                method_args = inspect.getargspec(method).args
+                args = {k:v for k,v in post.items() if k in method_args}
+                post = method(**args)
             except:
                 self.send_except()
                 return
